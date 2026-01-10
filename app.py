@@ -1,48 +1,146 @@
-# --- TAB 3: ENTRENAMIENTO PRO CON SLIDER DE PARTICIÓN ---
-with tab3:
-    st.subheader("🚀 Configuración del Motor de Inteligencia")
-    c1, c2 = st.columns(2)
-    target = c1.selectbox("🎯 Variable Objetivo (Y):", num_cols)
-    features = c2.multiselect("🔍 Variables de Entrada (X):", [c for c in num_cols if c != target])
+import streamlit as st
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import plotly.express as px
 
-    st.write("🔧 **Ajuste de Validación y Red:**")
-    col_t1, col_t2, col_t3 = st.columns(3)
-    
-    # NUEVO: Slider para elegir el tamaño del Test (examen)
-    test_size_pct = col_t1.slider("Porcentaje de Test (%):", 10, 40, 20)
-    m_depth = col_t2.slider("Profundidad del Árbol:", 3, 10, 5)
-    l_rate = col_t3.select_slider("Tasa de Aprendizaje:", [0.01, 0.05, 0.1, 0.2], value=0.05)
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Metalurgia Pro: Partición 70/30", layout="wide")
+st.title("🏭 Modelamiento Predictivo: Configuración 70/30 + K-Fold")
 
-    if st.button("🔥 Entrenar Modelo Optimizado", use_container_width=True):
-        if not features:
-            st.error("Selecciona variables de entrada.")
+# --- CARGA DE DATOS ---
+st.sidebar.header("📂 Gestión de Datos")
+archivo = st.sidebar.file_uploader("Subir dataset (CSV o Excel)", type=["csv", "xlsx"])
+
+if archivo:
+    if "ultimo_archivo" not in st.session_state or st.session_state.ultimo_archivo != archivo.name:
+        st.cache_resource.clear()
+        st.session_state.ultimo_archivo = archivo.name
+
+    df = pd.read_csv(archivo) if archivo.name.endswith('.csv') else pd.read_excel(archivo)
+    df.columns = df.columns.astype(str).str.strip()
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    t1, t2, t3, t4, t5 = st.tabs([
+        "👁️ 1. Vista Previa", 
+        "🧹 2. Auditoría de Outliers", 
+        "🛠️ 3. Entrenamiento (70/30)", 
+        "📊 4. Diagnóstico", 
+        "🎯 5. Simulador"
+    ])
+
+    # --- 1. VISTA PREVIA ---
+    with t1:
+        st.subheader("Inspección Inicial")
+        st.dataframe(df.head(20), use_container_width=True)
+
+    # --- 2. AUDITORÍA (X e Y) ---
+    with t2:
+        st.subheader("⚙️ Auditoría Multivariable")
+        cols_auditoria = st.multiselect("Variables a auditar (Entradas y Objetivo):", num_cols, default=num_cols[:min(5, len(num_cols))])
+        
+        if cols_auditoria:
+            indices_out = set()
+            for col in cols_auditoria:
+                q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+                iqr = q3 - q1
+                indices_out.update(df[(df[col] < q1 - 1.5*iqr) | (df[col] > q3 + 1.5*iqr)].index)
+            st.session_state['borrar'] = list(indices_out)
+            st.warning(f"Filas con ruidos detectadas: {len(indices_out)}")
+
+    # --- 3. ENTRENAMIENTO PRO (70/30 + K-FOLD) ---
+    with t3:
+        st.subheader("🚀 Entrenamiento con Partición 70% Train / 30% Test")
+        c1, c2 = st.columns(2)
+        target = c1.selectbox("🎯 Objetivo (Y):", num_cols)
+        features = c2.multiselect("🔍 Entradas (X):", [c for c in num_cols if c != target])
+
+        st.divider()
+        st.write("⚙️ **Ajustes del Algoritmo XGBoost:**")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        n_trees = col_p1.slider("N° Árboles", 50, 500, 150)
+        m_depth = col_p2.slider("Profundidad", 3, 10, 5)
+        l_rate = col_p3.select_slider("Learning Rate", [0.01, 0.05, 0.1, 0.2], value=0.05)
+
+        if st.button("🔥 Iniciar Entrenamiento Pro", use_container_width=True):
+            if not features:
+                st.error("Selecciona variables de entrada.")
+            else:
+                progreso = st.progress(0)
+                status = st.empty()
+                with st.spinner('Entrenando...'):
+                    df_s = df[[target] + features].dropna()
+                    df_l = df_s.drop(st.session_state.get('borrar', []), errors='ignore')
+                    progreso.progress(20)
+
+                    def entrenar_modelo(data):
+                        X, y = data[features], data[target]
+                        # 1. K-FOLD (5 pliegues) sobre toda la data
+                        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+                        model_base = xgb.XGBRegressor(n_estimators=n_trees, max_depth=m_depth, learning_rate=l_rate, random_state=42)
+                        cv_scores = cross_val_score(model_base, X, y, cv=kf, scoring='r2')
+                        
+                        # 2. PARTICIÓN FIJA 70/30
+                        X_t, X_v, y_t, y_v = train_test_split(X, y, test_size=0.30, random_state=42)
+                        model_base.fit(X_t, y_t)
+                        p = model_base.predict(X_v)
+                        
+                        return {
+                            'R2_CV': np.mean(cv_scores), 'R2_STD': np.std(cv_scores),
+                            'R2_Test': r2_score(y_v, p), 'RMSE': np.sqrt(mean_squared_error(y_v, p)),
+                            'BIAS': np.mean(p - y_v), 'n': len(data), 'model': model_base,
+                            'df_val': X_v.assign(REAL=y_v, PRED=p),
+                            'importancia': pd.Series(model_base.feature_importances_, index=features).sort_values()
+                        }
+
+                    status.text("Entrenando Modelo Sucio...")
+                    res_s = entrenar_modelo(df_s)
+                    progreso.progress(60)
+                    
+                    status.text("Entrenando Modelo Limpio (Auditado)...")
+                    res_l = entrenar_modelo(df_l)
+                    progreso.progress(100)
+                    status.text("¡Completado!")
+
+                    # REPORTE COMPARATIVO
+                    st.markdown("### 📊 Comparativa Final (70/30 Split)")
+                    res_df = pd.DataFrame({
+                        "Métrica": ["R² Promedio (Estabilidad)", "R² Examen (Test 30%)", "Error (RMSE)", "Sesgo (Bias)", "Muestras"],
+                        "Sin Limpiar": [f"{res_s['R2_CV']:.4f}", f"{res_s['R2_Test']:.4f}", f"{res_s['RMSE']:.4f}", f"{res_s['BIAS']:.4f}", res_s['n']],
+                        "Limpio (Auditado)": [f"{res_l['R2_CV']:.4f}", f"{res_l['R2_Test']:.4f}", f"{res_l['RMSE']:.4f}", f"{res_l['BIAS']:.4f}", res_l['n']]
+                    })
+                    st.table(res_df)
+                    st.session_state.update({'mod': res_l['model'], 'feat': features, 'targ': target, 'db': df_l, 'res_s': res_s, 'res_l': res_l})
+                    st.toast("Modelo 70/30 entrenado correctamente", icon="✅")
+
+    # --- 4. DIAGNÓSTICO ---
+    with t4:
+        if 'res_l' in st.session_state:
+            st.subheader("🧪 Importancia de Variables y Dispersión")
+            d1, d2 = st.columns(2)
+            with d1:
+                st.plotly_chart(px.bar(st.session_state.res_l['importancia'], orientation='h', title="Impacto Operativo", color_discrete_sequence=['#2ecc71']), use_container_width=True)
+            with d2:
+                var_x = st.selectbox("Eje X:", st.session_state.feat)
+                st.plotly_chart(px.scatter(st.session_state.res_l['df_val'], x=var_x, y="REAL", trendline="ols", title="Correlación en el Test (30%)"), use_container_width=True)
         else:
-            with st.spinner('Entrenando...'):
-                df_s = df[[target] + features].dropna()
-                df_l = df_s.drop(st.session_state.get('borrar', []), errors='ignore')
+            st.warning("Entrena el modelo primero.")
 
-                def entrenar_pro(data, t_size):
-                    X, y = data[features], data[target]
-                    
-                    # VALIDACIÓN CRUZADA (K-Fold) de respaldo
-                    kf = KFold(n_splits=5, shuffle=True, random_state=42)
-                    model_cv = xgb.XGBRegressor(n_estimators=150, max_depth=m_depth, learning_rate=l_rate)
-                    cv_scores = cross_val_score(model_cv, X, y, cv=kf, scoring='r2')
-                    
-                    # ENTRENAMIENTO FINAL con el % elegido por el usuario
-                    X_t, X_v, y_t, y_v = train_test_split(X, y, test_size=t_size/100, random_state=42)
-                    model_final = xgb.XGBRegressor(n_estimators=150, max_depth=m_depth, learning_rate=l_rate)
-                    model_final.fit(X_t, y_t)
-                    p = model_final.predict(X_v)
-                    
-                    return {
-                        'R2_CV': np.mean(cv_scores), 'R2_test': r2_score(y_v, p),
-                        'RMSE': np.sqrt(mean_squared_error(y_v, p)), 'Bias': np.mean(p - y_v),
-                        'model': model_final, 'df_val': X_v.assign(REAL=y_v, PRED=p), 'n': len(data),
-                        'importancia': pd.Series(model_final.feature_importances_, index=features).sort_values()
-                    }
-
-                res_l = entrenar_pro(df_l, test_size_pct)
-                # (Aquí iría el resto del código para mostrar métricas y guardar en session_state)
-                st.success(f"Modelo entrenado con un {100-test_size_pct}% de entrenamiento y {test_size_pct}% de test.")
-                st.metric("Precisión en Test", f"{res_l['R2_test']:.4f}")
+    # --- 5. SIMULADOR ---
+    with t5:
+        if 'mod' in st.session_state:
+            st.subheader("🎯 Simulador What-If")
+            col_in, col_res = st.columns([1, 2])
+            with col_in:
+                input_data = {f: st.slider(f, float(df[f].min()), float(df[f].max()), float(df[f].mean())) for f in st.session_state.feat}
+            with col_res:
+                pred_val = st.session_state.mod.predict(pd.DataFrame([input_data]))[0]
+                st.metric(f"PREDICCIÓN {st.session_state.targ}", f"{pred_val:.2f}")
+                
+                # Sensibilidad
+                sens = {f: st.session_state.mod.predict(pd.DataFrame([input_data]).assign(**{f: input_data[f]*1.05}))[0] - pred_val for f in st.session_state.feat}
+                st.plotly_chart(px.bar(x=list(sens.values()), y=list(sens.keys()), orientation='h', title="Sensibilidad Operativa (+5%)"), use_container_width=True)
+else:
+    st.info("👋 Sube un archivo para iniciar el modelamiento 70/30.")
