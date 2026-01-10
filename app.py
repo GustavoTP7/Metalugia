@@ -7,134 +7,173 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import plotly.express as px
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Metalurgia Pro: Partición 70/30", layout="wide")
-st.title("🏭 Modelamiento Predictivo: Configuración 70/30 + K-Fold")
+st.set_page_config(page_title="Metalurgia Pro: Optimización 70/30", layout="wide")
+st.title("🏭 Sistema de Inteligencia Metalúrgica")
+st.markdown("---")
 
 # --- CARGA DE DATOS ---
-st.sidebar.header("📂 Gestión de Datos")
+st.sidebar.header("📂 Carga de Información")
 archivo = st.sidebar.file_uploader("Subir dataset (CSV o Excel)", type=["csv", "xlsx"])
 
 if archivo:
-    # Reiniciar estado si se sube un archivo nuevo
+    # Reinicio inteligente si el archivo cambia
     if "ultimo_archivo" not in st.session_state or st.session_state.ultimo_archivo != archivo.name:
-        for key in ['mod', 'res_l', 'res_s', 'borrar']:
-            if key in st.session_state: del st.session_state[key]
+        for key in list(st.session_state.keys()):
+            if key != "ultimo_archivo":
+                del st.session_state[key]
         st.session_state.ultimo_archivo = archivo.name
 
+    # Lectura de datos
     df = pd.read_csv(archivo) if archivo.name.endswith('.csv') else pd.read_excel(archivo)
     df.columns = df.columns.astype(str).str.strip()
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
+    # Definición de pestañas
     t1, t2, t3, t4, t5 = st.tabs([
         "👁️ 1. Vista Previa", 
-        "🧹 2. Auditoría de Outliers", 
+        "🧹 2. Auditoría", 
         "🛠️ 3. Entrenamiento (70/30)", 
         "📊 4. Diagnóstico", 
         "🎯 5. Simulador"
     ])
 
+    # --- 1. VISTA PREVIA ---
     with t1:
-        st.subheader("Inspección Inicial")
-        st.dataframe(df.head(20), use_container_width=True)
+        st.subheader("Inspección de Datos")
+        st.dataframe(df.head(15), use_container_width=True)
+        st.write("**Resumen Estadístico:**", df.describe())
 
+    # --- 2. AUDITORÍA (Outliers Multivariable) ---
     with t2:
-        st.subheader("⚙️ Auditoría Multivariable (X e Y)")
-        cols_auditoria = st.multiselect("Selecciona variables críticas para limpiar ruidos:", num_cols, default=num_cols[:min(3, len(num_cols))])
+        st.subheader("⚙️ Gestión de Calidad de Datos")
+        st.info("Audita entradas (X) y objetivo (Y) para eliminar ruidos de sensores.")
+        cols_auditoria = st.multiselect("Variables a auditar:", num_cols, default=num_cols[:min(3, len(num_cols))])
         
         indices_out = set()
         if cols_auditoria:
             for col in cols_auditoria:
                 q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
                 iqr = q3 - q1
-                indices_out.update(df[(df[col] < q1 - 1.5*iqr) | (df[col] > q3 + 1.5*iqr)].index)
+                bajo, alto = q1 - 1.5*iqr, q3 + 1.5*iqr
+                indices_out.update(df[(df[col] < bajo) | (df[col] > alto)].index)
+            
             st.session_state['borrar'] = list(indices_out)
-            st.warning(f"Filas con anomalías detectadas: {len(indices_out)}")
+            st.warning(f"Se han identificado {len(indices_out)} filas con anomalías globales.")
 
+    # --- 3. ENTRENAMIENTO (70/30 + K-FOLD) ---
     with t3:
-        st.subheader("🚀 Entrenamiento con Partición 70% Train / 30% Test")
+        st.subheader("🚀 Entrenamiento de Alta Precisión")
         c1, c2 = st.columns(2)
         target = c1.selectbox("🎯 Objetivo (Y):", num_cols)
         features = c2.multiselect("🔍 Entradas (X):", [c for c in num_cols if c != target])
 
         st.divider()
-        col_p1, col_p2, col_p3 = st.columns(3)
-        n_trees = col_p1.slider("N° Árboles", 50, 500, 150)
-        m_depth = col_p2.slider("Profundidad", 3, 10, 5)
-        l_rate = col_p3.select_slider("Learning Rate", [0.01, 0.05, 0.1, 0.2], value=0.05)
+        st.write("🔧 **Parámetros de Optimización:**")
+        col_a, col_b, col_c = st.columns(3)
+        n_trees = col_a.slider("Cantidad de Árboles", 50, 500, 150)
+        m_depth = col_b.slider("Complejidad (Profundidad)", 3, 10, 5)
+        l_rate = col_c.select_slider("Tasa de Aprendizaje", [0.01, 0.05, 0.1, 0.2], value=0.05)
 
-        if st.button("🔥 Iniciar Entrenamiento Pro", use_container_width=True):
+        if st.button("🔥 Ejecutar Modelamiento Pro", use_container_width=True):
             if not features:
-                st.error("Selecciona variables de entrada.")
+                st.error("⚠️ Debes seleccionar al menos una variable de entrada (X).")
             else:
-                progreso = st.progress(0)
-                status = st.empty()
-                with st.spinner('Entrenando modelos de alta precisión...'):
+                with st.spinner('Procesando algoritmos y validación cruzada...'):
+                    # Preparación de datos
                     df_s = df[[target] + features].dropna()
                     df_l = df_s.drop(st.session_state.get('borrar', []), errors='ignore')
                     
-                    def entrenar_modelo(data):
+                    def motor_entrenamiento(data):
                         X, y = data[features], data[target]
+                        # K-Fold (5 particiones)
                         kf = KFold(n_splits=5, shuffle=True, random_state=42)
-                        model_base = xgb.XGBRegressor(n_estimators=n_trees, max_depth=m_depth, learning_rate=l_rate, random_state=42)
-                        cv_scores = cross_val_score(model_base, X, y, cv=kf, scoring='r2')
+                        model = xgb.XGBRegressor(n_estimators=n_trees, max_depth=m_depth, learning_rate=l_rate, random_state=42)
+                        cv_scores = cross_val_score(model, X, y, cv=kf, scoring='r2')
                         
+                        # Partición 70/30 para examen final
                         X_t, X_v, y_t, y_v = train_test_split(X, y, test_size=0.30, random_state=42)
-                        model_base.fit(X_t, y_t)
-                        p = model_base.predict(X_v)
+                        model.fit(X_t, y_t)
+                        p = model.predict(X_v)
                         
                         return {
-                            'R2_CV': np.mean(cv_scores), 'R2_STD': np.std(cv_scores),
-                            'R2_Test': r2_score(y_v, p), 'RMSE': np.sqrt(mean_squared_error(y_v, p)),
-                            'BIAS': np.mean(p - y_v), 'n': len(data), 'model': model_base,
+                            'R2_CV': np.mean(cv_scores),
+                            'R2_Test': r2_score(y_v, p),
+                            'RMSE': np.sqrt(mean_squared_error(y_v, p)),
+                            'Bias': np.mean(p - y_v),
+                            'n': len(data),
+                            'model': model,
                             'df_val': X_v.assign(REAL=y_v, PRED=p),
-                            'importancia': pd.Series(model_base.feature_importances_, index=features).sort_values()
+                            'importancia': pd.DataFrame({'Var': features, 'Imp': model.feature_importances_}).sort_values(by='Imp', ascending=True)
                         }
 
-                    status.text("Procesando modelo original...")
-                    res_s = entrenar_modelo(df_s)
-                    progreso.progress(50)
-                    
-                    status.text("Procesando modelo auditado...")
-                    res_l = entrenar_modelo(df_l)
-                    progreso.progress(100)
-                    status.text("¡Completado!")
+                    res_s = motor_entrenamiento(df_s)
+                    res_l = motor_entrenamiento(df_l)
 
-                    st.markdown("### 📊 Reporte Final (70/30)")
+                    # Mostrar Resultados
+                    st.markdown("### 📊 Reporte de Performance (70/30)")
                     res_df = pd.DataFrame({
-                        "Métrica": ["R² Estabilidad (CV)", "R² Examen (Test 30%)", "Error (RMSE)", "Sesgo (Bias)", "Muestras"],
-                        "Modelo Sucio": [f"{res_s['R2_CV']:.4f}", f"{res_s['R2_Test']:.4f}", f"{res_s['RMSE']:.4f}", f"{res_s['BIAS']:.4f}", res_s['n']],
-                        "Modelo Limpio": [f"{res_l['R2_CV']:.4f}", f"{res_l['R2_Test']:.4f}", f"{res_l['RMSE']:.4f}", f"{res_l['BIAS']:.4f}", res_l['n']]
+                        "Métrica": ["R² Promedio (CV)", "R² Examen (Test 30%)", "Error (RMSE)", "Sesgo (Bias)", "Filas Utilizadas"],
+                        "Modelo Original": [f"{res_s['R2_CV']:.4f}", f"{res_s['R2_Test']:.4f}", f"{res_s['RMSE']:.4f}", f"{res_s['Bias']:.4f}", res_s['n']],
+                        "Modelo Limpio": [f"{res_l['R2_CV']:.4f}", f"{res_l['R2_Test']:.4f}", f"{res_l['RMSE']:.4f}", f"{res_l['Bias']:.4f}", res_l['n']]
                     })
                     st.table(res_df)
-                    st.session_state.update({'mod': res_l['model'], 'feat': features, 'targ': target, 'db': df_l, 'res_s': res_s, 'res_l': res_l})
-                    st.toast("Modelo entrenado", icon="✅")
+                    
+                    # Guardar en estado
+                    st.session_state.update({'mod': res_l['model'], 'feat': features, 'targ': target, 'res_l': res_l, 'res_s': res_s, 'db_limpio': df_l})
+                    st.success("¡Modelo entrenado con éxito!")
 
+    # --- 4. DIAGNÓSTICO ---
     with t4:
         if 'res_l' in st.session_state:
-            st.subheader("🧪 Diagnóstico de Variables")
+            st.subheader("🧪 Análisis de Sensibilidad y Error")
             d1, d2 = st.columns(2)
             with d1:
-                # CORRECCIÓN: Usamos el objeto Series directamente
-                st.write("**Importancia de Variables (Impacto):**")
-                st.plotly_chart(px.bar(st.session_state.res_l['importancia'], orientation='h', color_discrete_sequence=['#2ecc71']), use_container_width=True)
+                st.write("**Importancia Relativa de Variables:**")
+                # Gráfico corregido
+                fig_imp = px.bar(st.session_state.res_l['importancia'], x='Imp', y='Var', orientation='h', 
+                                 title="Variables Críticas", color='Imp', color_continuous_scale='Viridis')
+                st.plotly_chart(fig_imp, use_container_width=True)
             with d2:
-                var_x = st.selectbox("Eje X para dispersión:", st.session_state.feat)
-                st.plotly_chart(px.scatter(st.session_state.res_l['df_val'], x=var_x, y="REAL", trendline="ols", title="Correlación Test (30%)"), use_container_width=True)
+                var_x = st.selectbox("Analizar dispersión por:", st.session_state.feat)
+                fig_scat = px.scatter(st.session_state.res_l['df_val'], x=var_x, y="REAL", trendline="ols", 
+                                     title=f"Precisión en Test (30%): {var_x} vs {target}")
+                st.plotly_chart(fig_scat, use_container_width=True)
         else:
-            st.info("💡 Ve a la pestaña '3. Entrenamiento' y presiona el botón para generar este análisis.")
+            st.info("⚠️ Los diagnósticos aparecerán aquí después de entrenar en la pestaña 3.")
 
+    # --- 5. SIMULADOR ---
     with t5:
         if 'mod' in st.session_state:
-            st.subheader("🎯 Simulador What-If")
+            st.subheader("🎯 Simulador de Operación")
             col_in, col_res = st.columns([1, 2])
             with col_in:
-                input_data = {f: st.slider(f, float(df[f].min()), float(df[f].max()), float(df[f].mean())) for f in st.session_state.feat}
+                st.write("**Condiciones de Proceso:**")
+                in_data = {}
+                for f in st.session_state.feat:
+                    v_min = float(st.session_state.db_limpio[f].min())
+                    v_max = float(st.session_state.db_limpio[f].max())
+                    v_mean = float(st.session_state.db_limpio[f].mean())
+                    in_data[f] = st.slider(f, v_min, v_max, v_mean)
+            
             with col_res:
-                pred_val = st.session_state.mod.predict(pd.DataFrame([input_data]))[0]
-                st.metric(f"PREDICCIÓN {st.session_state.targ}", f"{pred_val:.2f}")
-                sens = {f: st.session_state.mod.predict(pd.DataFrame([input_data]).assign(**{f: input_data[f]*1.05}))[0] - pred_val for f in st.session_state.feat}
-                st.plotly_chart(px.bar(x=list(sens.values()), y=list(sens.keys()), orientation='h', title="Sensibilidad Operativa (+5%)"), use_container_width=True)
+                df_sim = pd.DataFrame([in_data])
+                pred = st.session_state.mod.predict(df_sim)[0]
+                st.metric(f"PREDICCIÓN {st.session_state.targ}", f"{pred:.2f}")
+                
+                # Gráfico de impacto (+5%)
+                sens = {}
+                for f in st.session_state.feat:
+                    df_t = df_sim.copy()
+                    df_t[f] = df_t[f] * 1.05
+                    sens[f] = st.session_state.mod.predict(df_t)[0] - pred
+                
+                fig_sens = px.bar(x=list(sens.values()), y=list(sens.keys()), orientation='h', 
+                                  title="Impacto en el resultado ante +5% de cambio",
+                                  labels={'x':'Cambio en Predicción', 'y':'Variable'},
+                                  color=list(sens.values()), color_continuous_scale='RdYlGn')
+                st.plotly_chart(fig_sens, use_container_width=True)
         else:
-            st.info("💡 El simulador se activará automáticamente después de entrenar el modelo.")
+            st.info("⚠️ El simulador se activará automáticamente al finalizar el entrenamiento.")
+
 else:
-    st.info("👋 Sube un archivo Excel o CSV para comenzar el análisis metalúrgico.")
+    st.info("👋 Por favor, sube un archivo Excel o CSV para comenzar.")
