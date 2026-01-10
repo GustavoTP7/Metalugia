@@ -15,8 +15,10 @@ st.sidebar.header("📂 Gestión de Datos")
 archivo = st.sidebar.file_uploader("Subir dataset (CSV o Excel)", type=["csv", "xlsx"])
 
 if archivo:
+    # Reiniciar estado si se sube un archivo nuevo
     if "ultimo_archivo" not in st.session_state or st.session_state.ultimo_archivo != archivo.name:
-        st.cache_resource.clear()
+        for key in ['mod', 'res_l', 'res_s', 'borrar']:
+            if key in st.session_state: del st.session_state[key]
         st.session_state.ultimo_archivo = archivo.name
 
     df = pd.read_csv(archivo) if archivo.name.endswith('.csv') else pd.read_excel(archivo)
@@ -31,26 +33,23 @@ if archivo:
         "🎯 5. Simulador"
     ])
 
-    # --- 1. VISTA PREVIA ---
     with t1:
         st.subheader("Inspección Inicial")
         st.dataframe(df.head(20), use_container_width=True)
 
-    # --- 2. AUDITORÍA (X e Y) ---
     with t2:
-        st.subheader("⚙️ Auditoría Multivariable")
-        cols_auditoria = st.multiselect("Variables a auditar (Entradas y Objetivo):", num_cols, default=num_cols[:min(5, len(num_cols))])
+        st.subheader("⚙️ Auditoría Multivariable (X e Y)")
+        cols_auditoria = st.multiselect("Selecciona variables críticas para limpiar ruidos:", num_cols, default=num_cols[:min(3, len(num_cols))])
         
+        indices_out = set()
         if cols_auditoria:
-            indices_out = set()
             for col in cols_auditoria:
                 q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
                 iqr = q3 - q1
                 indices_out.update(df[(df[col] < q1 - 1.5*iqr) | (df[col] > q3 + 1.5*iqr)].index)
             st.session_state['borrar'] = list(indices_out)
-            st.warning(f"Filas con ruidos detectadas: {len(indices_out)}")
+            st.warning(f"Filas con anomalías detectadas: {len(indices_out)}")
 
-    # --- 3. ENTRENAMIENTO PRO (70/30 + K-FOLD) ---
     with t3:
         st.subheader("🚀 Entrenamiento con Partición 70% Train / 30% Test")
         c1, c2 = st.columns(2)
@@ -58,7 +57,6 @@ if archivo:
         features = c2.multiselect("🔍 Entradas (X):", [c for c in num_cols if c != target])
 
         st.divider()
-        st.write("⚙️ **Ajustes del Algoritmo XGBoost:**")
         col_p1, col_p2, col_p3 = st.columns(3)
         n_trees = col_p1.slider("N° Árboles", 50, 500, 150)
         m_depth = col_p2.slider("Profundidad", 3, 10, 5)
@@ -70,19 +68,16 @@ if archivo:
             else:
                 progreso = st.progress(0)
                 status = st.empty()
-                with st.spinner('Entrenando...'):
+                with st.spinner('Entrenando modelos de alta precisión...'):
                     df_s = df[[target] + features].dropna()
                     df_l = df_s.drop(st.session_state.get('borrar', []), errors='ignore')
-                    progreso.progress(20)
-
+                    
                     def entrenar_modelo(data):
                         X, y = data[features], data[target]
-                        # 1. K-FOLD (5 pliegues) sobre toda la data
                         kf = KFold(n_splits=5, shuffle=True, random_state=42)
                         model_base = xgb.XGBRegressor(n_estimators=n_trees, max_depth=m_depth, learning_rate=l_rate, random_state=42)
                         cv_scores = cross_val_score(model_base, X, y, cv=kf, scoring='r2')
                         
-                        # 2. PARTICIÓN FIJA 70/30
                         X_t, X_v, y_t, y_v = train_test_split(X, y, test_size=0.30, random_state=42)
                         model_base.fit(X_t, y_t)
                         p = model_base.predict(X_v)
@@ -95,40 +90,39 @@ if archivo:
                             'importancia': pd.Series(model_base.feature_importances_, index=features).sort_values()
                         }
 
-                    status.text("Entrenando Modelo Sucio...")
+                    status.text("Procesando modelo original...")
                     res_s = entrenar_modelo(df_s)
-                    progreso.progress(60)
+                    progreso.progress(50)
                     
-                    status.text("Entrenando Modelo Limpio (Auditado)...")
+                    status.text("Procesando modelo auditado...")
                     res_l = entrenar_modelo(df_l)
                     progreso.progress(100)
                     status.text("¡Completado!")
 
-                    # REPORTE COMPARATIVO
-                    st.markdown("### 📊 Comparativa Final (70/30 Split)")
+                    st.markdown("### 📊 Reporte Final (70/30)")
                     res_df = pd.DataFrame({
-                        "Métrica": ["R² Promedio (Estabilidad)", "R² Examen (Test 30%)", "Error (RMSE)", "Sesgo (Bias)", "Muestras"],
-                        "Sin Limpiar": [f"{res_s['R2_CV']:.4f}", f"{res_s['R2_Test']:.4f}", f"{res_s['RMSE']:.4f}", f"{res_s['BIAS']:.4f}", res_s['n']],
-                        "Limpio (Auditado)": [f"{res_l['R2_CV']:.4f}", f"{res_l['R2_Test']:.4f}", f"{res_l['RMSE']:.4f}", f"{res_l['BIAS']:.4f}", res_l['n']]
+                        "Métrica": ["R² Estabilidad (CV)", "R² Examen (Test 30%)", "Error (RMSE)", "Sesgo (Bias)", "Muestras"],
+                        "Modelo Sucio": [f"{res_s['R2_CV']:.4f}", f"{res_s['R2_Test']:.4f}", f"{res_s['RMSE']:.4f}", f"{res_s['BIAS']:.4f}", res_s['n']],
+                        "Modelo Limpio": [f"{res_l['R2_CV']:.4f}", f"{res_l['R2_Test']:.4f}", f"{res_l['RMSE']:.4f}", f"{res_l['BIAS']:.4f}", res_l['n']]
                     })
                     st.table(res_df)
                     st.session_state.update({'mod': res_l['model'], 'feat': features, 'targ': target, 'db': df_l, 'res_s': res_s, 'res_l': res_l})
-                    st.toast("Modelo 70/30 entrenado correctamente", icon="✅")
+                    st.toast("Modelo entrenado", icon="✅")
 
-    # --- 4. DIAGNÓSTICO ---
     with t4:
         if 'res_l' in st.session_state:
-            st.subheader("🧪 Importancia de Variables y Dispersión")
+            st.subheader("🧪 Diagnóstico de Variables")
             d1, d2 = st.columns(2)
             with d1:
-                st.plotly_chart(px.bar(st.session_state.res_l['importancia'], orientation='h', title="Impacto Operativo", color_discrete_sequence=['#2ecc71']), use_container_width=True)
+                # CORRECCIÓN: Usamos el objeto Series directamente
+                st.write("**Importancia de Variables (Impacto):**")
+                st.plotly_chart(px.bar(st.session_state.res_l['importancia'], orientation='h', color_discrete_sequence=['#2ecc71']), use_container_width=True)
             with d2:
-                var_x = st.selectbox("Eje X:", st.session_state.feat)
-                st.plotly_chart(px.scatter(st.session_state.res_l['df_val'], x=var_x, y="REAL", trendline="ols", title="Correlación en el Test (30%)"), use_container_width=True)
+                var_x = st.selectbox("Eje X para dispersión:", st.session_state.feat)
+                st.plotly_chart(px.scatter(st.session_state.res_l['df_val'], x=var_x, y="REAL", trendline="ols", title="Correlación Test (30%)"), use_container_width=True)
         else:
-            st.warning("Entrena el modelo primero.")
+            st.info("💡 Ve a la pestaña '3. Entrenamiento' y presiona el botón para generar este análisis.")
 
-    # --- 5. SIMULADOR ---
     with t5:
         if 'mod' in st.session_state:
             st.subheader("🎯 Simulador What-If")
@@ -138,9 +132,9 @@ if archivo:
             with col_res:
                 pred_val = st.session_state.mod.predict(pd.DataFrame([input_data]))[0]
                 st.metric(f"PREDICCIÓN {st.session_state.targ}", f"{pred_val:.2f}")
-                
-                # Sensibilidad
                 sens = {f: st.session_state.mod.predict(pd.DataFrame([input_data]).assign(**{f: input_data[f]*1.05}))[0] - pred_val for f in st.session_state.feat}
                 st.plotly_chart(px.bar(x=list(sens.values()), y=list(sens.keys()), orientation='h', title="Sensibilidad Operativa (+5%)"), use_container_width=True)
+        else:
+            st.info("💡 El simulador se activará automáticamente después de entrenar el modelo.")
 else:
-    st.info("👋 Sube un archivo para iniciar el modelamiento 70/30.")
+    st.info("👋 Sube un archivo Excel o CSV para comenzar el análisis metalúrgico.")
