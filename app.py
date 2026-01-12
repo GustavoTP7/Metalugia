@@ -25,7 +25,14 @@ st.title("🏭 Centro de Control Metalúrgico")
 with st.sidebar:
     st.header("1️⃣ Carga y Filtros")
     archivo = st.file_uploader("Subir dataset", type=["csv", "xlsx"])
-    factor_iqr = st.slider("Sensibilidad Outliers (IQR)", 1.0, 3.0, 1.5)
+    
+    # NUEVA OPCIÓN: Selección de modo de datos
+    modo_datos = st.radio("Selecciona modo de datos:", 
+                          ["Dataset Original", "Sin Outliers (Auditado)"],
+                          help="El modo 'Sin Outliers' eliminará filas ruidosas basadas en el factor IQR.")
+    
+    factor_iqr = st.slider("Sensibilidad Outliers (IQR)", 1.0, 3.0, 1.5, 
+                           disabled=(modo_datos == "Dataset Original"))
     
     st.divider()
     
@@ -47,16 +54,23 @@ if archivo and btn_entrenar:
         st.error("⚠️ Selecciona variables X en la barra lateral.")
     else:
         with st.spinner('Entrenando y validando...'):
-            # Detección de Outliers
-            indices_out = set()
-            for col in [target] + features:
-                q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
-                iqr = q3 - q1
-                indices_out.update(df[(df[col] < q1 - factor_iqr*iqr) | (df[col] > q3 + factor_iqr*iqr)].index)
+            # Preparar base
+            df_base = df[[target] + features].dropna()
             
-            df_orig = df[[target] + features].dropna()
-            df_sin = df_orig.drop(list(indices_out), errors='ignore')
+            # Lógica de Filtrado según el modo elegido
+            if modo_datos == "Sin Outliers (Auditado)":
+                indices_out = set()
+                for col in [target] + features:
+                    q1, q3 = df_base[col].quantile(0.25), df_base[col].quantile(0.75)
+                    iqr = q3 - q1
+                    indices_out.update(df_base[(df_base[col] < q1 - factor_iqr*iqr) | (df_base[col] > q3 + factor_iqr*iqr)].index)
+                df_final = df_base.drop(list(indices_out), errors='ignore')
+                etiqueta = "AUDITADO (SIN OUTLIERS)"
+            else:
+                df_final = df_base
+                etiqueta = "ORIGINAL (CON TODO)"
 
+            # Motor de entrenamiento
             def procesar_motor(data):
                 X, y = data[features], data[target]
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
@@ -74,50 +88,43 @@ if archivo and btn_entrenar:
                     "imp": pd.DataFrame({'Var': features, 'Imp': model.feature_importances_})
                 }
 
-            st.session_state['res_o'] = procesar_motor(df_orig)
-            st.session_state['res_s'] = procesar_motor(df_sin)
+            # Guardamos el resultado del entrenamiento
+            st.session_state['res_actual'] = procesar_motor(df_final)
             st.session_state['features_list'] = features
             st.session_state['target_name'] = target
-            st.session_state['df_limpio'] = df_sin
+            st.session_state['df_usado'] = df_final
+            st.session_state['modo_usado'] = etiqueta
 
 # --- VISUALIZACIÓN PRINCIPAL ---
-if 'res_o' in st.session_state:
+if 'res_actual' in st.session_state:
+    st.info(f"📍 Mostrando resultados del modelo: **{st.session_state['modo_usado']}**")
+    
     # Métricas de Cabecera
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Estabilidad (CV)", f"{st.session_state['res_s']['cv']:.4f}")
-    c2.metric("Precisión (Test)", f"{st.session_state['res_s']['test']:.4f}")
-    c3.metric("Error (RMSE)", f"{st.session_state['res_s']['rmse']:.3f}")
-    c4.metric("Filas Auditadas", len(st.session_state['df_limpio']))
+    c1.metric("Estabilidad (CV)", f"{st.session_state['res_actual']['cv']:.4f}")
+    c2.metric("Precisión (Test)", f"{st.session_state['res_actual']['test']:.4f}")
+    c3.metric("Error (RMSE)", f"{st.session_state['res_actual']['rmse']:.3f}")
+    c4.metric("Filas en Modelo", len(st.session_state['df_usado']))
 
     tab_diag, tab_sim, tab_data = st.tabs(["📊 Diagnóstico Ejes", "🎯 Simulador", "👁️ Visor & Histogramas"])
 
     with tab_diag:
-        st.subheader("Análisis de Ajuste y Variables")
-        
-        # Selección de ejes personalizada
         col_diag1, col_diag2 = st.columns([1, 2])
         with col_diag1:
             eje_x_diag = st.selectbox("Eje X (Dispersión):", ["Real"] + st.session_state['features_list'])
             eje_y_diag = st.selectbox("Eje Y (Dispersión):", ["Pred", "Real"])
         
         with col_diag2:
-            # Si elige variables de entrada vs Realidad/Predicción
             if eje_x_diag in st.session_state['features_list']:
-                # Unimos datos de prueba con las entradas originales para poder graficar X vs Y
-                df_visual = st.session_state['df_limpio'].copy()
-                fig_scatter = px.scatter(df_visual, x=eje_x_diag, y=st.session_state['target_name'], 
+                fig_scatter = px.scatter(st.session_state['df_usado'], x=eje_x_diag, y=st.session_state['target_name'], 
                                         trendline="ols", title=f"Relación: {eje_x_diag} vs {st.session_state['target_name']}")
             else:
-                # Gráfico estándar Real vs Predicho
-                fig_scatter = px.scatter(st.session_state['res_s']['df_test'], x=eje_x_diag, y=eje_y_diag, 
-                                        trendline="ols", title="Gráfico de Ajuste del Modelo")
-            
+                fig_scatter = px.scatter(st.session_state['res_actual']['df_test'], x=eje_x_diag, y=eje_y_diag, 
+                                        trendline="ols", title="Gráfico de Ajuste")
             st.plotly_chart(fig_scatter, use_container_width=True)
 
-        st.divider()
-        st.subheader("Importancia Relativa de Sensores")
-        imp_df = st.session_state['res_s']['imp'].sort_values('Imp', ascending=True)
-        st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', color='Imp', color_continuous_scale='Viridis'), use_container_width=True)
+        imp_df = st.session_state['res_actual']['imp'].sort_values('Imp', ascending=True)
+        st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', title="Peso de las Variables", color='Imp'), use_container_width=True)
 
     with tab_sim:
         st.subheader("Simulador en Tiempo Real")
@@ -125,35 +132,29 @@ if 'res_o' in st.session_state:
         inputs = {}
         with c_in:
             for f in st.session_state['features_list']:
-                val_min = float(st.session_state['df_limpio'][f].min())
-                val_max = float(st.session_state['df_limpio'][f].max())
-                val_avg = float(st.session_state['df_limpio'][f].mean())
-                inputs[f] = st.slider(f, val_min, val_max, val_avg)
-        
+                val_min = float(st.session_state['df_usado'][f].min())
+                val_max = float(st.session_state['df_usado'][f].max())
+                val_avg = float(st.session_state['df_usado'][f].mean())
+                inputs[f] = st.slider(f"Ajustar {f}", val_min, val_max, val_avg)
         with c_res:
-            pred_val = st.session_state['res_s']['model'].predict(pd.DataFrame([inputs]))[0]
+            pred_val = st.session_state['res_actual']['model'].predict(pd.DataFrame([inputs]))[0]
             st.markdown(f"""
                 <div style="background-color:#0E1117; padding:40px; border-radius:15px; border: 2px solid #00FF00; text-align:center">
-                    <h2 style="color:white; margin-bottom:0px">PREDICCIÓN</h2>
-                    <h1 style="color:#00FF00; font-size:70px; margin-top:10px">{pred_val:.3f}</h1>
+                    <h2 style="color:white; margin:0">PREDICCIÓN</h2>
+                    <h1 style="color:#00FF00; font-size:70px">{pred_val:.3f}</h1>
                     <p style="color:#888">{st.session_state['target_name']}</p>
                 </div>
             """, unsafe_allow_html=True)
 
     with tab_data:
-        c_tab1, c_tab2 = st.columns([1, 1])
-        with c_tab1:
-            st.subheader("Datos Auditados")
-            st.dataframe(st.session_state['df_limpio'], use_container_width=True)
-        
-        with c_tab2:
-            st.subheader("Distribución (Histograma)")
-            var_hist = st.selectbox("Selecciona variable para histograma:", [st.session_state['target_name']] + st.session_state['features_list'])
-            fig_hist = px.histogram(st.session_state['df_limpio'], x=var_hist, nbins=30, 
-                                   marginal="box", title=f"Distribución de {var_hist}", color_discrete_sequence=['#636EFA'])
-            st.plotly_chart(fig_hist, use_container_width=True)
+        c_t1, c_t2 = st.columns([1, 1])
+        with c_t1:
+            st.subheader("Datos Utilizados")
+            st.dataframe(st.session_state['df_usado'], use_container_width=True)
+        with c_t2:
+            st.subheader("Distribución")
+            var_h = st.selectbox("Variable histograma:", [st.session_state['target_name']] + st.session_state['features_list'])
+            st.plotly_chart(px.histogram(st.session_state['df_usado'], x=var_h, nbins=30, marginal="box", title=f"Frecuencia de {var_h}"), use_container_width=True)
 
 elif archivo:
-    st.info("👈 Configura las variables y presiona el botón 'ENTRENAR MODELO' en la barra lateral.")
-else:
-    st.info("👋 Bienvenida/o. Por favor, sube un archivo CSV o Excel para comenzar.")
+    st.info("👈 Configura y presiona 'ENTRENAR MODELO' en la barra lateral.")
