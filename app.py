@@ -7,7 +7,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 import plotly.express as px
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Metalurgia Hub", layout="wide")
+st.set_page_config(page_title="Metalurgia Hub Pro", layout="wide")
 
 @st.cache_data
 def cargar_datos(archivo):
@@ -46,7 +46,7 @@ if archivo and btn_entrenar:
     if not features:
         st.error("⚠️ Selecciona variables X en la barra lateral.")
     else:
-        with st.spinner('Entrenando...'):
+        with st.spinner('Entrenando y validando...'):
             # Detección de Outliers
             indices_out = set()
             for col in [target] + features:
@@ -89,18 +89,35 @@ if 'res_o' in st.session_state:
     c3.metric("Error (RMSE)", f"{st.session_state['res_s']['rmse']:.3f}")
     c4.metric("Filas Auditadas", len(st.session_state['df_limpio']))
 
-    tab_diag, tab_sim, tab_data = st.tabs(["📊 Diagnóstico", "🎯 Simulador", "👁️ Datos"])
+    tab_diag, tab_sim, tab_data = st.tabs(["📊 Diagnóstico Ejes", "🎯 Simulador", "👁️ Visor & Histogramas"])
 
     with tab_diag:
-        col_left, col_right = st.columns(2)
-        with col_left:
-            fig_fit = px.scatter(st.session_state['res_s']['df_test'], x='Real', y='Pred', trendline="ols", 
-                                 title="Ajuste: Real vs Predicho", color_discrete_sequence=['#00FF00'])
-            st.plotly_chart(fig_fit, use_container_width=True)
-        with col_right:
-            imp_df = st.session_state['res_s']['imp'].sort_values('Imp', ascending=True)
-            fig_imp = px.bar(imp_df, x='Imp', y='Var', orientation='h', title="Importancia de Variables")
-            st.plotly_chart(fig_imp, use_container_width=True)
+        st.subheader("Análisis de Ajuste y Variables")
+        
+        # Selección de ejes personalizada
+        col_diag1, col_diag2 = st.columns([1, 2])
+        with col_diag1:
+            eje_x_diag = st.selectbox("Eje X (Dispersión):", ["Real"] + st.session_state['features_list'])
+            eje_y_diag = st.selectbox("Eje Y (Dispersión):", ["Pred", "Real"])
+        
+        with col_diag2:
+            # Si elige variables de entrada vs Realidad/Predicción
+            if eje_x_diag in st.session_state['features_list']:
+                # Unimos datos de prueba con las entradas originales para poder graficar X vs Y
+                df_visual = st.session_state['df_limpio'].copy()
+                fig_scatter = px.scatter(df_visual, x=eje_x_diag, y=st.session_state['target_name'], 
+                                        trendline="ols", title=f"Relación: {eje_x_diag} vs {st.session_state['target_name']}")
+            else:
+                # Gráfico estándar Real vs Predicho
+                fig_scatter = px.scatter(st.session_state['res_s']['df_test'], x=eje_x_diag, y=eje_y_diag, 
+                                        trendline="ols", title="Gráfico de Ajuste del Modelo")
+            
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        st.divider()
+        st.subheader("Importancia Relativa de Sensores")
+        imp_df = st.session_state['res_s']['imp'].sort_values('Imp', ascending=True)
+        st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', color='Imp', color_continuous_scale='Viridis'), use_container_width=True)
 
     with tab_sim:
         st.subheader("Simulador en Tiempo Real")
@@ -124,7 +141,17 @@ if 'res_o' in st.session_state:
             """, unsafe_allow_html=True)
 
     with tab_data:
-        st.dataframe(st.session_state['df_limpio'], use_container_width=True)
+        c_tab1, c_tab2 = st.columns([1, 1])
+        with c_tab1:
+            st.subheader("Datos Auditados")
+            st.dataframe(st.session_state['df_limpio'], use_container_width=True)
+        
+        with c_tab2:
+            st.subheader("Distribución (Histograma)")
+            var_hist = st.selectbox("Selecciona variable para histograma:", [st.session_state['target_name']] + st.session_state['features_list'])
+            fig_hist = px.histogram(st.session_state['df_limpio'], x=var_hist, nbins=30, 
+                                   marginal="box", title=f"Distribución de {var_hist}", color_discrete_sequence=['#636EFA'])
+            st.plotly_chart(fig_hist, use_container_width=True)
 
 elif archivo:
     st.info("👈 Configura las variables y presiona el botón 'ENTRENAR MODELO' en la barra lateral.")
