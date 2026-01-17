@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import plotly.express as px
 
@@ -55,9 +55,8 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
         st.error("⚠️ Selecciona variables X.")
     else:
         with st.spinner('Procesando inteligencia de planta...'):
-            # 1. ORDENAMIENTO ALFABÉTICO (Blindaje)
+            # 1. ORDENAMIENTO ALFABÉTICO (Blindaje de columnas)
             features = sorted(features_raw)
-            
             df_base = df[[col_id, target] + features].dropna().copy()
             
             # 2. LIMPIEZA DE OUTLIERS
@@ -82,7 +81,7 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
                     mapeos[col] = cats
                     X_encoded[col] = X_encoded[col].map({v: i for i, v in enumerate(cats)})
 
-            # 4. ENTRENAMIENTO
+            # 4. ENTRENAMIENTO Y MÉTRICAS AVANZADAS (Reporte Técnico)
             X_train, X_test, y_train, y_test = train_test_split(X_encoded, df_final[target], test_size=0.3, random_state=42)
             model = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42)
             model.fit(X_train, y_train)
@@ -90,9 +89,20 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
             test_preds = model.predict(X_test)
             all_preds = model.predict(X_encoded)
 
+            # Cálculo de Métricas Técnicas
+            r2 = r2_score(y_test, test_preds)
+            mae = mean_absolute_error(y_test, test_preds)
+            rmse = np.sqrt(mean_squared_error(y_test, test_preds))
+            bias = np.mean(test_preds - y_test)
+            
+            # K-Fold (Validación Cruzada para Estabilidad)
+            kf = KFold(n_splits=5, shuffle=True, random_state=42)
+            cv_scores = cross_val_score(model, X_encoded, df_final[target], cv=kf, scoring='r2')
+            r2_kfold = cv_scores.mean()
+
+            # 5. GUARDAR RESULTADOS
             st.session_state['res'] = {
-                'test': r2_score(y_test, test_preds), 
-                'rmse': np.sqrt(mean_squared_error(y_test, test_preds)),
+                'test': r2, 'r2_kfold': r2_kfold, 'mae': mae, 'rmse': rmse, 'bias': bias,
                 'model': model, 'target': target, 'features': features, 'mapeos': mapeos,
                 'df_work': df_final, 'modo': etiqueta, 'col_id': col_id,
                 'all_preds': all_preds,
@@ -107,11 +117,14 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
 if 'res' in st.session_state:
     res = st.session_state['res']
     
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Precisión (R²)", f"{res['test']:.4f}")
-    m2.metric("Error (RMSE)", f"{res['rmse']:.3f}")
-    m3.metric("Modo", res['modo'])
-    m4.metric("Datos Usados", len(res['df_work']))
+    # 🏁 CABECERA DE MÉTRICAS TÉCNICAS (Tipo Colab)
+    st.markdown("### 🛡️ Reporte Técnico de Modelamiento")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("R² (Precisión)", f"{res['test']:.4f}")
+    m2.metric("R² K-Fold (Estabilidad)", f"{res['r2_kfold']:.4f}")
+    m3.metric("MAE (Error Medio)", f"{res['mae']:.3f}")
+    m4.metric("RMSE (Riesgo)", f"{res['rmse']:.3f}")
+    m5.metric("Bias (Sesgo)", f"{res['bias']:.4f}", delta_color="inverse")
 
     tabs = st.tabs(["📊 Diagnóstico Ejes", "🚩 Auditoría 360°", "🎯 Simulador Pro", "👁️ Datos & Histogramas"])
 
@@ -126,10 +139,10 @@ if 'res' in st.session_state:
             st.divider()
             st.subheader("Sensibilidad")
             imp_df = pd.DataFrame({'Var': res['features'], 'Imp': res['model'].feature_importances_}).sort_values('Imp')
-            st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', height=300), use_container_width=True)
+            st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', height=300, color='Imp'), use_container_width=True)
 
         with cx2:
-            # PROTECCIÓN CONTRA DUPLICADOS (MISMA VARIABLE X e Y)
+            # PROTECCIÓN CONTRA DUPLICADOS
             df_plot = pd.DataFrame(index=res['df_work'].index)
             df_plot[res['col_id']] = res['df_work'][res['col_id']]
             
@@ -140,8 +153,7 @@ if 'res' in st.session_state:
 
             nx, dx = get_data(eje_x)
             ny, dy = get_data(eje_y)
-
-            if nx == ny: ny = f"{ny}_dup" # Evita DuplicateError
+            if nx == ny: ny = f"{ny}_dup"
 
             df_plot[nx] = dx
             df_plot[ny] = dy
@@ -159,12 +171,12 @@ if 'res' in st.session_state:
         with c1:
             st.table(df_audit_full[['ID_Turno', 'Real', 'Pred', 'Error', 'Desviación_%']].head(10))
             csv = df_audit_full.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Descargar Reporte", csv, "auditoria.csv", "text/csv")
+            st.download_button("📥 Descargar Reporte CSV", csv, "auditoria_planta.csv", "text/csv")
         with c2:
-            st.plotly_chart(px.scatter(df_audit_full, x='Real', y='Error', size='Error', color='Error'), use_container_width=True)
+            st.plotly_chart(px.scatter(df_audit_full, x='Real', y='Error', size='Error', color='Error', title="Magnitud del Error"), use_container_width=True)
         
         st.divider()
-        v_err = st.selectbox("Error vs Variable:", res['features'])
+        v_err = st.selectbox("Analizar Error vs Variable:", res['features'])
         st.plotly_chart(px.scatter(df_audit_full, x=v_err, y='Error', trendline="ols", color_discrete_sequence=['#FF4B4B']), use_container_width=True)
 
     with tabs[2]:
@@ -181,9 +193,15 @@ if 'res' in st.session_state:
                     v_min, v_max = float(res['df_work'][f].min()), float(res['df_work'][f].max())
                     inputs[f] = st.slider(f, v_min, v_max, float(res['df_work'][f].mean()))
         with cout:
-            df_input = pd.DataFrame([inputs])[res['features']] # Blindaje de orden
+            df_input = pd.DataFrame([inputs])[res['features']]
             pred_val = res['model'].predict(df_input)[0]
-            st.markdown(f"<div style='background-color:#0E1117; padding:40px; border-radius:15px; border: 2px solid #00FF00; text-align:center'><h2 style='color:white'>PREDICCIÓN {res['target']}</h2><h1 style='color:#00FF00; font-size:70px'>{pred_val:.3f}</h1><p style='color:white'>±{res['rmse']:.2f}</p></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style='background-color:#0E1117; padding:40px; border-radius:15px; border: 2px solid #00FF00; text-align:center'>
+                    <h2 style='color:white'>PREDICCIÓN {res['target']}</h2>
+                    <h1 style='color:#00FF00; font-size:70px'>{pred_val:.3f}</h1>
+                    <p style='color:white'>Riesgo de Desviación: ±{res['rmse']:.2f}</p>
+                </div>
+            """, unsafe_allow_html=True)
 
     with tabs[3]:
         ct1, ct2 = st.columns(2)
@@ -191,9 +209,9 @@ if 'res' in st.session_state:
             st.subheader("Visor de Datos")
             st.dataframe(res['df_work'], use_container_width=True)
         with ct2:
-            st.subheader("Histogramas")
-            v_h = st.selectbox("Histograma de:", [res['target']] + res['features'])
+            st.subheader("Histogramas de Control")
+            v_h = st.selectbox("Histograma:", [res['target']] + res['features'])
             st.plotly_chart(px.histogram(res['df_work'], x=v_h, nbins=35, marginal="box"), use_container_width=True)
 
 elif archivo:
-    st.info("👈 Selecciona variables y entrena.")
+    st.info("👈 Configura la columna ID y las variables, luego entrena.")
