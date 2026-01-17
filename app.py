@@ -55,9 +55,12 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
         st.error("⚠️ Selecciona variables X.")
     else:
         with st.spinner('Procesando inteligencia de planta...'):
+            # 1. ORDENAMIENTO ALFABÉTICO (Blindaje de columnas)
             features = sorted(features_raw)
+            
             df_base = df[[col_id, target] + features].dropna().copy()
             
+            # 2. LIMPIEZA DE OUTLIERS
             if modo_datos == "Sin Outliers (Auditado)":
                 indices_out = set()
                 for col in [target] + [f for f in features if df_base[f].dtype in [np.float64, np.int64]]:
@@ -70,6 +73,7 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
                 df_final = df_base
                 etiqueta = "ORIGINAL (CON RUIDO)"
 
+            # 3. ENCODING / MAPEOS (Variables Categóricas)
             X_encoded = df_final[features].copy()
             mapeos = {}
             for col in features:
@@ -78,19 +82,26 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
                     mapeos[col] = cats
                     X_encoded[col] = X_encoded[col].map({v: i for i, v in enumerate(cats)})
 
+            # 4. ENTRENAMIENTO Y PREDICCIÓN TOTAL
             X_train, X_test, y_train, y_test = train_test_split(X_encoded, df_final[target], test_size=0.3, random_state=42)
             model = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42)
             model.fit(X_train, y_train)
-            preds = model.predict(X_test)
+            
+            # Predicciones para métricas (test) y para el dataset completo (visualización)
+            test_preds = model.predict(X_test)
+            all_preds = model.predict(X_encoded)
 
+            # 5. GUARDAR RESULTADOS EN SESSION STATE
             st.session_state['res'] = {
-                'test': r2_score(y_test, preds), 
-                'rmse': np.sqrt(mean_squared_error(y_test, preds)),
+                'test': r2_score(y_test, test_preds), 
+                'rmse': np.sqrt(mean_squared_error(y_test, test_preds)),
                 'model': model, 'target': target, 'features': features, 'mapeos': mapeos,
                 'df_work': df_final, 'modo': etiqueta, 'col_id': col_id,
+                'all_preds': all_preds, # Guardamos todas las predicciones
                 'df_audit': pd.DataFrame({
                     'ID_Turno': df_final.loc[y_test.index, col_id],
-                    'Real': y_test.values, 'Pred': preds, 'Error': np.abs(y_test.values - preds)
+                    'Real': y_test.values, 'Pred': test_preds, 
+                    'Error': np.abs(y_test.values - test_preds)
                 }).sort_values('Error', ascending=False)
             }
 
@@ -109,7 +120,6 @@ if 'res' in st.session_state:
     with tabs[0]:
         cx1, cx2 = st.columns([1, 2])
         with cx1:
-            # RESTAURADO: Selección libre de ejes X e Y
             st.subheader("Configuración de Gráfico")
             opciones_ejes = ["Real", "Pred"] + res['features']
             eje_x_libre = st.selectbox("Eje X:", opciones_ejes, index=0)
@@ -118,49 +128,44 @@ if 'res' in st.session_state:
             st.divider()
             st.subheader("Sensibilidad del Modelo")
             imp_df = pd.DataFrame({'Var': res['features'], 'Imp': res['model'].feature_importances_}).sort_values('Imp')
-            st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', height=300, title="Importancia"), use_container_width=True)
+            st.plotly_chart(px.bar(imp_df, x='Imp', y='Var', orientation='h', height=300), use_container_width=True)
 
         with cx2:
-            # Lógica para construir el gráfico dinámico basado en las elecciones del usuario
-            # Si elige Real/Pred usamos df_audit, si elige variables usamos df_work
-            source_df = res['df_audit'] if (eje_x_libre in ["Real", "Pred"] and eje_y_libre in ["Real", "Pred"]) else res['df_work']
-            
-            # Ajuste de nombres de columnas para el gráfico
-            plot_x = eje_x_libre
-            plot_y = eje_y_libre
-            if eje_x_libre == "Real": plot_y = res['target'] if eje_y_libre == "Real" else eje_y_libre
+            # UNIFICACIÓN DE DATOS PARA GRÁFICO (Evita ValueErrors)
+            df_plot = res['df_work'].copy()
+            df_plot['Real'] = df_plot[res['target']]
+            df_plot['Pred'] = res['all_preds']
 
-            fig_sc = px.scatter(res['df_work'], 
-                                x=res['target'] if eje_x_libre == "Real" else eje_x_libre, 
-                                y=res['target'] if eje_y_libre == "Real" else eje_y_libre, 
-                                hover_data=[res['col_id']], 
-                                trendline="ols", 
-                                title=f"Correlación: {eje_x_libre} vs {eje_y_libre}")
-            
-            # Caso especial: Si es Real vs Pred, usamos la tabla de auditoría para precisión exacta
-            if eje_x_libre == "Real" and eje_y_libre == "Pred":
-                fig_sc = px.scatter(res['df_audit'], x='Real', y='Pred', hover_data=['ID_Turno'], trendline="ols", title="Ajuste Real vs Predicho")
-
+            fig_sc = px.scatter(
+                df_plot, 
+                x=eje_x_libre, 
+                y=eje_y_libre, 
+                hover_data=[res['col_id']], 
+                trendline="ols", 
+                title=f"Gráfico Dinámico: {eje_x_libre} vs {eje_y_libre}"
+            )
             st.plotly_chart(fig_sc, use_container_width=True)
 
     with tabs[1]:
-        # (Se mantiene tu radar de desviaciones, tabla top 10, error por rango y descarga CSV)
         st.subheader("🚩 Radar de Desviaciones Críticas")
         df_audit_full = res['df_audit'].merge(res['df_work'], left_on='ID_Turno', right_on=res['col_id'], how='left')
         df_audit_full['Desviación_%'] = (df_audit_full['Error'] / df_audit_full['Real']) * 100
         
-        c1, c2 = st.columns(2)
-        with c1:
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("### 🏆 Top 10 Turnos Críticos")
             st.table(df_audit_full[['ID_Turno', 'Real', 'Pred', 'Error', 'Desviación_%']].head(10))
-        with c2:
-            st.plotly_chart(px.scatter(df_audit_full, x='Real', y='Error', size='Error', color='Error', title="Magnitud del Error"), use_container_width=True)
+            csv = df_audit_full.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Descargar Reporte Completo", csv, "auditoria_metalurgica.csv", "text/csv")
+        with col_t2:
+            st.markdown("### 🔍 Error por Rango de Operación")
+            st.plotly_chart(px.scatter(df_audit_full, x='Real', y='Error', size='Error', color='Error'), use_container_width=True)
         
         st.divider()
-        var_err = st.selectbox("Ver error vs variable:", res['features'])
-        st.plotly_chart(px.scatter(df_audit_full, x=var_err, y='Error', trendline="ols", color_discrete_sequence=['#FF4B4B']), use_container_width=True)
+        var_analisis = st.selectbox("Analizar error contra variable específica:", res['features'])
+        st.plotly_chart(px.scatter(df_audit_full, x=var_analisis, y='Error', trendline="ols", color_discrete_sequence=['#FF4B4B']), use_container_width=True)
 
     with tabs[2]:
-        # (Se mantiene tu simulador con sliders y mapeo de categorías)
         st.subheader("Simulador What-If")
         cin, cout = st.columns(2)
         inputs = {}
@@ -174,20 +179,26 @@ if 'res' in st.session_state:
                     v_min, v_max = float(res['df_work'][f].min()), float(res['df_work'][f].max())
                     inputs[f] = st.slider(f, v_min, v_max, float(res['df_work'][f].mean()))
         with cout:
+            # BLINDAJE DE ORDEN: Aseguramos que el simulador use el orden de 'res['features']'
             df_input = pd.DataFrame([inputs])[res['features']]
             pred_val = res['model'].predict(df_input)[0]
-            st.markdown(f"<div style='background-color:#0E1117; padding:40px; border-radius:15px; border: 2px solid #00FF00; text-align:center'><h2 style='color:white'>PREDICCIÓN</h2><h1 style='color:#00FF00; font-size:70px'>{pred_val:.3f}</h1></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+                <div style='background-color:#0E1117; padding:40px; border-radius:15px; border: 2px solid #00FF00; text-align:center'>
+                    <h2 style='color:white'>PREDICCIÓN {res['target']}</h2>
+                    <h1 style='color:#00FF00; font-size:70px'>{pred_val:.3f}</h1>
+                    <p style='color:white'>Margen de Confianza ±{res['rmse']:.2f}</p>
+                </div>
+            """, unsafe_allow_html=True)
 
     with tabs[3]:
-        # (Se mantiene tu visor de datos e histogramas)
         ct1, ct2 = st.columns(2)
         with ct1:
-            st.subheader("Visor de Datos")
+            st.subheader("Visor de Datos (Auditados)")
             st.dataframe(res['df_work'], use_container_width=True)
         with ct2:
-            st.subheader("Histogramas")
-            v_h = st.selectbox("Variable:", [res['target']] + res['features'])
-            st.plotly_chart(px.histogram(res['df_work'], x=v_h, nbins=35, marginal="box"), use_container_width=True)
+            st.subheader("Histogramas de Control")
+            v_h = st.selectbox("Variable para Histograma:", [res['target']] + res['features'])
+            st.plotly_chart(px.histogram(res['df_work'], x=v_h, nbins=35, marginal="box", labels={"count": "Frecuencia"}), use_container_width=True)
 
 elif archivo:
-    st.info("👈 Configura la columna ID y las variables, luego entrena.")
+    st.info("👈 Configura la columna ID y las variables, luego entrena el modelo.")
