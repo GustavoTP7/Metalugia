@@ -44,15 +44,16 @@ with st.sidebar:
             features_raw = st.multiselect("🔍 Variables de Entrada (X)", [c for c in cols_todas if c not in [target, col_id]])
             
             st.divider()
-            btn_entrenar = st.button("🚀 INICIAR AUDITORÍA K-FOLD", use_container_width=True, type="primary")
+            # Botón con instrucción clara de lo que hace internamente
+            btn_entrenar = st.button("🚀 INICIAR AUDITORÍA K-FOLD (MULTI-CORE)", use_container_width=True, type="primary")
 
-# --- LÓGICA DE PROCESAMIENTO K-FOLD ---
+# --- LÓGICA DE PROCESAMIENTO K-FOLD (PARALELIZADO) ---
 if archivo and 'btn_entrenar' in locals() and btn_entrenar:
     if not features_raw:
         st.error("⚠️ Selecciona variables X.")
     else:
         status = st.empty()
-        status.info("⏳ Ejecutando Validación Cruzada sobre el 100% de los datos...")
+        status.info("⏳ Ejecutando K-Fold en paralelo (n_jobs=-1)...")
         
         features = sorted(features_raw)
         df_base = df[[col_id, target] + features].dropna().copy()
@@ -77,19 +78,25 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
                 mapeos[col] = cats
                 X_encoded[col] = X_encoded[col].map({v: i for i, v in enumerate(cats)})
 
-        # MODELO BASE
-        model = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, n_jobs=-1)
+        # MODELO CON PARALELISMO ACTIVADO (n_jobs=-1)
+        model = xgb.XGBRegressor(
+            n_estimators=100, 
+            max_depth=6, 
+            learning_rate=0.1, 
+            random_state=42, 
+            n_jobs=-1 # Usa todos los núcleos disponibles
+        )
 
-        # ESTRATEGIA K-FOLD: Predicción sobre el 100% de los datos
+        # ESTRATEGIA K-FOLD
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         
-        # Generamos predicciones "Out-of-Fold" (cada punto predicho por un modelo que no lo vio)
+        # Predicción Out-of-Fold (también usa n_jobs del modelo)
         y_pred_kfold = cross_val_predict(model, X_encoded, df_final[target], cv=kf)
         
-        # Entrenamos un modelo final con TODO para el simulador
+        # Entrenamos un modelo final para el simulador
         model_final = model.fit(X_encoded, df_final[target])
 
-        # Métricas Globales (Basadas en K-Fold)
+        # Métricas Globales
         r2_total = r2_score(df_final[target], y_pred_kfold)
         mae_total = mean_absolute_error(df_final[target], y_pred_kfold)
         rmse_total = np.sqrt(mean_squared_error(df_final[target], y_pred_kfold))
@@ -122,7 +129,7 @@ if 'res' in st.session_state:
 
     tabs = st.tabs(["📊 Gráficos de Correlación", "🚩 Auditoría por Turno", "🎯 Simulador de Planta", "👁️ Datos & Histogramas"])
 
-    with tabs[0]: # DIAGNÓSTICO
+    with tabs[0]: 
         c1, c2 = st.columns([1, 2])
         with c1:
             st.subheader("Ejes de Análisis")
@@ -132,10 +139,9 @@ if 'res' in st.session_state:
             
             st.divider()
             imp = pd.DataFrame({'V': res['features'], 'I': res['model'].feature_importances_}).sort_values('I')
-            st.plotly_chart(px.bar(imp, x='I', y='V', orientation='h', title="Peso de Variables", color_discrete_sequence=['#00FF00']), use_container_width=True)
+            st.plotly_chart(px.bar(imp, x='I', y='V', orientation='h', title="Peso de Variables"), use_container_width=True)
         
         with c2:
-            # Construcción de DataFrame para gráfico (Protección de duplicados)
             df_p = pd.DataFrame({res['col_id']: res['df_work'][res['col_id']]})
             def get_col(sel):
                 if sel == "Objetivo Real": return "Real_Val", res['df_work'][res['target']]
@@ -146,26 +152,25 @@ if 'res' in st.session_state:
             if nx == ny: ny += "_dup"
             df_p[nx], df_p[ny] = dx, dy
             
-            fig = px.scatter(df_p, x=nx, y=ny, trendline="ols", hover_data=[res['col_id']], 
-                             labels={nx: e_x, ny: e_y}, title=f"Correlación {e_x} vs {e_y}")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(px.scatter(df_p, x=nx, y=ny, trendline="ols", hover_data=[res['col_id']], 
+                             labels={nx: e_x, ny: e_y}, title=f"Correlación {e_x} vs {e_y}"), use_container_width=True)
 
-    with tabs[1]: # AUDITORÍA
-        st.subheader("Auditoría de Desviaciones (Todos los Turnos)")
+    with tabs[1]: 
+        st.subheader("Auditoría de Desviaciones")
         df_a = res['df_audit'].merge(res['df_work'], on='ID_Turno')
         df_a['Desv_%'] = (df_a['Error'] / df_a['Real']) * 100
         
         col_t1, col_t2 = st.columns([1, 1])
         with col_t1:
-            st.write("Top 10 Desviaciones más altas:")
+            st.write("Top 10 Desviaciones:")
             st.table(df_a[['ID_Turno', 'Real', 'Pred', 'Error', 'Desv_%']].head(10))
             csv = df_a.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Descargar Auditoría Completa", csv, "auditoria_kfold.csv", "text/csv")
+            st.download_button("📥 Descargar Auditoría", csv, "auditoria_kfold.csv", "text/csv")
         with col_t2:
-            st.plotly_chart(px.scatter(df_a, x='Real', y='Error', color='Error', title="Distribución del Error"), use_container_width=True)
+            st.plotly_chart(px.scatter(df_a, x='Real', y='Error', color='Error'), use_container_width=True)
 
-    with tabs[2]: # SIMULADOR
-        st.subheader("Simulador What-If (Modelo Final)")
+    with tabs[2]: 
+        st.subheader("Simulador What-If")
         c_in, c_out = st.columns(2)
         inputs = {}
         with c_in:
@@ -186,7 +191,7 @@ if 'res' in st.session_state:
                 </div>
             """, unsafe_allow_html=True)
 
-    with tabs[3]: # DATOS
+    with tabs[3]: 
         c_d1, c_d2 = st.columns(2)
         with c_d1:
             st.subheader("Dataset de Trabajo")
@@ -194,7 +199,7 @@ if 'res' in st.session_state:
         with c_d2:
             st.subheader("Análisis de Distribución")
             v_h = st.selectbox("Variable:", [res['target']] + res['features'])
-            st.plotly_chart(px.histogram(res['df_work'], x=v_h, marginal="box", color_discrete_sequence=['#4B4BFF']), use_container_width=True)
+            st.plotly_chart(px.histogram(res['df_work'], x=v_h, marginal="box"), use_container_width=True)
 
 elif archivo:
-    st.info("👈 Configura los parámetros y presiona 'INICIAR AUDITORÍA K-FOLD'.")
+    st.info("👈 Configura los parámetros y presiona 'INICIAR'.")
