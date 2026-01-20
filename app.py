@@ -141,15 +141,20 @@ if 'res' in st.session_state:
             df_plot['X'] = get_data(e_x)
             df_plot['Y'] = get_data(e_y)
             
-            fig = px.scatter(df_plot, x='X', y='Y', hover_data=[res['col_id']], labels={'X':e_x, 'Y':e_y}, template="plotly_dark")
+            # --- SOLUCIÓN: LÍNEA DE TENDENCIA RESTAURADA ---
+            # Usamos px.scatter con trendline sobre el dataset completo
+            fig = px.scatter(df_plot, x='X', y='Y', hover_data=[res['col_id']], 
+                             labels={'X':e_x, 'Y':e_y}, template="plotly_dark",
+                             trendline="ols", trendline_color_override="cyan")
             
-            # --- AJUSTE DE MARCADOR ÚLTIMO TURNO ---
+            # Superponemos el círculo del último turno para que no lo tape la línea
             fig.add_trace(go.Scatter(
                 x=[df_plot['X'].iloc[-1]], 
                 y=[df_plot['Y'].iloc[-1]],
                 mode='markers', 
                 marker=dict(color='Lime', size=12, symbol='circle', line=dict(width=2, color='white')),
-                name='Turno Actual'
+                name='Turno Actual',
+                showlegend=True
             ))
             st.plotly_chart(fig, use_container_width=True)
 
