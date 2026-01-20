@@ -141,13 +141,12 @@ if 'res' in st.session_state:
             df_plot['X'] = get_data(e_x)
             df_plot['Y'] = get_data(e_y)
             
-            # --- SOLUCIÓN: LÍNEA DE TENDENCIA RESTAURADA ---
-            # Usamos px.scatter con trendline sobre el dataset completo
+            # --- LÍNEA DE TENDENCIA EN COLOR BLANCO ---
             fig = px.scatter(df_plot, x='X', y='Y', hover_data=[res['col_id']], 
                              labels={'X':e_x, 'Y':e_y}, template="plotly_dark",
-                             trendline="ols", trendline_color_override="cyan")
+                             trendline="ols", trendline_color_override="white")
             
-            # Superponemos el círculo del último turno para que no lo tape la línea
+            # Punto del último turno (Círculo Lima)
             fig.add_trace(go.Scatter(
                 x=[df_plot['X'].iloc[-1]], 
                 y=[df_plot['Y'].iloc[-1]],
