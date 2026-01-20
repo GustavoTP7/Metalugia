@@ -55,7 +55,6 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
         features = sorted(features_raw)
         df_base = df[[col_id, target] + features].dropna().copy()
         
-        # Filtro de Outliers
         if modo_datos == "Sin Outliers (Auditado)":
             indices_out = set()
             for col in [target] + [f for f in features if df_base[f].dtype in [np.float64, np.int64]]:
@@ -66,7 +65,6 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
         else:
             df_final = df_base
 
-        # Encoding de Categóricas
         X_encoded = df_final[features].copy()
         mapeos = {}
         for col in features:
@@ -75,17 +73,11 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
                 mapeos[col] = cats
                 X_encoded[col] = X_encoded[col].map({v: i for i, v in enumerate(cats)})
 
-        # Modelo XGBoost Paralelizado
         model = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42, n_jobs=-1)
-        
-        # K-Fold sobre el 100% de los datos
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         y_pred_kfold = cross_val_predict(model, X_encoded, df_final[target], cv=kf)
-        
-        # Modelo final para simulaciones
         model_final = model.fit(X_encoded, df_final[target])
 
-        # Extracción de la Última Fila (Turno Actual)
         idx_ultimo = df_final.index[-1]
         val_id_ultimo = df_final.loc[idx_ultimo, col_id]
         val_real_ultimo = df_final.loc[idx_ultimo, target]
@@ -108,7 +100,6 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
 if 'res' in st.session_state:
     res = st.session_state['res']
     
-    # BANNER DE MONITOREO EN VIVO
     error_actual = abs(res['ultimo']['real'] - res['ultimo']['pred'])
     color_alerta = "#FF4B4B" if error_actual > res['mae'] else "#00FF00"
     
@@ -120,7 +111,6 @@ if 'res' in st.session_state:
                 <div style="text-align:center"><p style="color:#BBB; margin:0">Predicción IA</p><h1 style="color:#00FF00; margin:0">{res['ultimo']['pred']:.2f}</h1></div>
                 <div style="text-align:center"><p style="color:#BBB; margin:0">Desviación</p><h1 style="color:{color_alerta}; margin:0">{error_actual:.2f}</h1></div>
             </div>
-            <p style="color:#888; margin-top:10px; font-size:14px">Nota: Una desviación mayor al MAE (±{res['mae']:.2f}) sugiere anomalías operativas o error de muestreo.</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -135,13 +125,11 @@ if 'res' in st.session_state:
     with tabs[0]:
         col_ctrl, col_graph = st.columns([1, 2])
         with col_ctrl:
-            st.subheader("Configurar Visualización")
             opc_ejes = ["Objetivo Real", "Predicción IA"] + res['features']
             e_x = st.selectbox("Eje Horizontal (X):", opc_ejes, index=0)
             e_y = st.selectbox("Eje Vertical (Y):", opc_ejes, index=1)
-            st.divider()
             imp = pd.DataFrame({'Var': res['features'], 'Imp': res['model'].feature_importances_}).sort_values('Imp')
-            st.plotly_chart(px.bar(imp, x='Imp', y='Var', orientation='h', title="Peso en la Recuperación", color_discrete_sequence=['#00CC96']), use_container_width=True)
+            st.plotly_chart(px.bar(imp, x='Imp', y='Var', orientation='h', title="Peso de Variables"), use_container_width=True)
 
         with col_graph:
             df_plot = pd.DataFrame({res['col_id']: res['df_work'][res['col_id']]})
@@ -154,59 +142,53 @@ if 'res' in st.session_state:
             df_plot['Y'] = get_data(e_y)
             
             fig = px.scatter(df_plot, x='X', y='Y', hover_data=[res['col_id']], labels={'X':e_x, 'Y':e_y}, template="plotly_dark")
-            # Resaltar la última fila con un Diamante Rojo
-            fig.add_trace(go.Scatter(x=[df_plot['X'].iloc[-1]], y=[df_plot['Y'].iloc[-1]],
-                                     mode='markers', marker=dict(color='Red', size=18, symbol='diamond', line=dict(width=2, color='white')),
-                                     name='Turno Actual'))
+            
+            # --- AJUSTE DE MARCADOR ÚLTIMO TURNO ---
+            fig.add_trace(go.Scatter(
+                x=[df_plot['X'].iloc[-1]], 
+                y=[df_plot['Y'].iloc[-1]],
+                mode='markers', 
+                marker=dict(color='Lime', size=12, symbol='circle', line=dict(width=2, color='white')),
+                name='Turno Actual'
+            ))
             st.plotly_chart(fig, use_container_width=True)
 
     with tabs[1]:
-        st.subheader("Auditoría Histórica Completa")
         df_audit = pd.DataFrame({
             'ID_Turno': res['df_work'][res['col_id']],
             'Real': res['df_work'][res['target']],
             'IA_Pred': res['preds'],
             'Error_Abs': np.abs(res['df_work'][res['target']] - res['preds'])
         }).sort_values('Error_Abs', ascending=False)
-        
-        # Corrección: Eliminado .style para evitar dependencia de matplotlib
         st.dataframe(df_audit, use_container_width=True)
-        st.download_button("📥 Descargar Reporte Completo", df_audit.to_csv(index=False), "auditoria.csv")
+        st.download_button("📥 Descargar Reporte", df_audit.to_csv(index=False), "auditoria.csv")
 
     with tabs[2]:
-        st.subheader("Escenarios What-If (Iniciando desde el Turno Actual)")
-        st.info(f"📍 Los controles se han ajustado automáticamente a las condiciones del turno {res['ultimo']['id']}")
+        st.info(f"📍 Turno base: {res['ultimo']['id']}")
         cin, cout = st.columns(2)
         user_inputs = {}
         fila_actual = res['ultimo']['fila']
-        
         with cin:
             for f in res['features']:
                 if f in res['mapeos']:
                     opciones = res['mapeos'][f]
                     idx_ini = opciones.index(fila_actual[f])
-                    sel = st.selectbox(f"Variable: {f}", opciones, index=idx_ini)
+                    sel = st.selectbox(f, opciones, index=idx_ini)
                     user_inputs[f] = opciones.index(sel)
                 else:
                     v_min, v_max = float(res['df_work'][f].min()), float(res['df_work'][f].max())
                     v_ini = float(fila_actual[f])
                     user_inputs[f] = st.slider(f, v_min, v_max, v_ini)
-        
         with cout:
             pred_escenario = res['model'].predict(pd.DataFrame([user_inputs])[res['features']])[0]
             impacto = pred_escenario - res['ultimo']['pred']
             st.markdown(f"""
                 <div style="background-color:#0E1117; padding:60px; border-radius:20px; border: 3px solid #00FF00; text-align:center; margin-top:20px">
-                    <h3 style="color:white">PROYECCIÓN DE ESCENARIO</h3>
+                    <h3 style="color:white">PROYECCIÓN</h3>
                     <h1 style="color:#00FF00; font-size:90px; margin:0">{pred_escenario:.3f}</h1>
-                    <h3 style="color:{'#00FF00' if impacto >=0 else '#FF4B4B'}">Impacto vs Actual: {impacto:+.3f}</h3>
+                    <h3 style="color:{'#00FF00' if impacto >=0 else '#FF4B4B'}">Impacto: {impacto:+.3f}</h3>
                 </div>
             """, unsafe_allow_html=True)
 
     with tabs[3]:
         st.dataframe(res['df_work'], use_container_width=True)
-        vh = st.selectbox("Ver Distribución de:", [res['target']] + res['features'])
-        st.plotly_chart(px.histogram(res['df_work'], x=vh, marginal="box", color_discrete_sequence=['#636EFA']), use_container_width=True)
-
-elif archivo:
-    st.success("✅ Archivo cargado. Configura las variables y presiona el botón para auditar.")
