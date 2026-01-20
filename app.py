@@ -168,7 +168,10 @@ if 'res' in st.session_state:
             'IA_Pred': res['preds'],
             'Error_Abs': np.abs(res['df_work'][res['target']] - res['preds'])
         }).sort_values('Error_Abs', ascending=False)
-        st.dataframe(df_audit.style.background_gradient(subset=['Error_Abs'], cmap='Reds'), use_container_width=True)
+        
+        # Corrección: Eliminado .style para evitar dependencia de matplotlib
+        st.dataframe(df_audit, use_container_width=True)
+        st.download_button("📥 Descargar Reporte Completo", df_audit.to_csv(index=False), "auditoria.csv")
 
     with tabs[2]:
         st.subheader("Escenarios What-If (Iniciando desde el Turno Actual)")
