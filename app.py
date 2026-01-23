@@ -20,7 +20,7 @@ def cargar_datos(archivo):
         st.error(f"Error al cargar: {e}")
         return None
 
-st.title("🏭 Centro de Control Metalúrgico")
+st.title("🏭 Centro de Control Metalúrgico: Inteligencia en Tiempo Real")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -42,7 +42,7 @@ with st.sidebar:
             features_raw = st.multiselect("🔍 Variables de Entrada (X)", [c for c in cols_todas if c not in [target, col_id]])
             
             st.divider()
-            btn_entrenar = st.button("🚀 ENTRENAR", use_container_width=True, type="primary")
+            btn_entrenar = st.button("🚀 INICIAR MONITOREO Y AUDITORÍA", use_container_width=True, type="primary")
 
 # --- LÓGICA DE PROCESAMIENTO K-FOLD + PARALELISMO ---
 if archivo and 'btn_entrenar' in locals() and btn_entrenar:
@@ -50,12 +50,12 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
         st.error("⚠️ Debes seleccionar al menos una variable de entrada (X).")
     else:
         status = st.empty()
-        status.info("⏳ Procesando")
+        status.info("⏳ Procesando validación cruzada en paralelo (n_jobs=-1)...")
         
         features = sorted(features_raw)
         df_base = df[[col_id, target] + features].dropna().copy()
         
-        if modo_datos == "Sin Outliers":
+        if modo_datos == "Sin Outliers (Auditado)":
             indices_out = set()
             for col in [target] + [f for f in features if df_base[f].dtype in [np.float64, np.int64]]:
                 q1, q3 = df_base[col].quantile(0.25), df_base[col].quantile(0.75)
@@ -88,9 +88,9 @@ if archivo and 'btn_entrenar' in locals() and btn_entrenar:
 
         st.session_state['res'] = {
             'r2': r2_score(df_final[target], y_pred_kfold),
-            'MAE': mean_absolute_error(df_final[target], y_pred_kfold),
-            'RSME': np.sqrt(mean_squared_error(df_final[target], y_pred_kfold)),
-            'BIAS': np.mean(y_pred_kfold - df_final[target]),
+            'mae': mean_absolute_error(df_final[target], y_pred_kfold),
+            'rmse': np.sqrt(mean_squared_error(df_final[target], y_pred_kfold)),
+            'bias': np.mean(y_pred_kfold - df_final[target]),
             'model': model_final, 'target': target, 'features': features, 'mapeos': mapeos,
             'df_work': df_final, 'preds': y_pred_kfold, 'col_id': col_id,
             'ultimo': {'id': val_id_ultimo, 'real': val_real_ultimo, 'pred': val_pred_ultimo, 'fila': fila_ultimo_raw}
@@ -115,17 +115,17 @@ if 'res' in st.session_state:
     """, unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("R² (K-Fold)", f"{res['r2']:.4f}")
+    m1.metric("R² Estabilidad (K-Fold)", f"{res['r2']:.4f}")
     m2.metric("Error Promedio (MAE)", f"{res['mae']:.3f}")
     m3.metric("Riesgo (RMSE)", f"{res['rmse']:.3f}")
     m4.metric("Sesgo (Bias)", f"{res['bias']:.4f}", delta_color="inverse")
 
-    tabs = st.tabs(["📊 Análisis de Tendencias", "🚩 Información por Fila", "🎯 Simulador", "👁️ Base de Datos"])
+    tabs = st.tabs(["📊 Análisis de Tendencias", "🚩 Auditoría por Fila", "🎯 Simulador Proactivo", "👁️ Base de Datos"])
 
     with tabs[0]:
         col_ctrl, col_graph = st.columns([1, 2])
         with col_ctrl:
-            opc_ejes = ["Objetivo Real", "Predicción"] + res['features']
+            opc_ejes = ["Objetivo Real", "Predicción IA"] + res['features']
             e_x = st.selectbox("Eje Horizontal (X):", opc_ejes, index=0)
             e_y = st.selectbox("Eje Vertical (Y):", opc_ejes, index=1)
             imp = pd.DataFrame({'Var': res['features'], 'Imp': res['model'].feature_importances_}).sort_values('Imp')
@@ -135,7 +135,7 @@ if 'res' in st.session_state:
             df_plot = pd.DataFrame({res['col_id']: res['df_work'][res['col_id']]})
             def get_data(sel):
                 if sel == "Objetivo Real": return res['df_work'][res['target']]
-                if sel == "Predicción": return res['preds']
+                if sel == "Predicción IA": return res['preds']
                 return res['df_work'][sel]
             
             df_plot['X'] = get_data(e_x)
@@ -151,7 +151,7 @@ if 'res' in st.session_state:
                 x=[df_plot['X'].iloc[-1]], 
                 y=[df_plot['Y'].iloc[-1]],
                 mode='markers', 
-                marker=dict(color='Lime', size=10, symbol='circle', line=dict(width=2, color='white')),
+                marker=dict(color='Lime', size=12, symbol='circle', line=dict(width=2, color='white')),
                 name='Turno Actual',
                 showlegend=True
             ))
