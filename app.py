@@ -20,7 +20,7 @@ def cargar_datos(archivo):
         st.error(f"Error al cargar: {e}")
         return None
 
-st.title("🏭 Centro de Control Metalúrgico: Inteligencia en Tiempo Real")
+st.title("🏭 Centro de Control Metalúrgico")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
